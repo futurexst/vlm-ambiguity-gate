@@ -218,3 +218,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- vlm-ambiguity-gate: never commit data, weights, images, logs ---
+data/
+models/
+test_images/
+logs/
+runs/
+*.zip
+*.pt
+*.safetensors
+*.jpg
+*.png
