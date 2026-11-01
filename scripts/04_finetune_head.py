@@ -110,6 +110,7 @@ def main():
     ap.add_argument("--reextract", action="store_true")
     ap.add_argument("--val-seq", default=None, help="이 영상을 통째로 검증용으로 사용 (정보 누수 방지)")
     ap.add_argument("--out", default="runs/ft/head_ft.pt")
+    ap.add_argument("--select", default="loss", choices=["loss", "auroc"], help="최적 시점 선택 기준")
     a = ap.parse_args()
 
     random.seed(a.seed); np.random.seed(a.seed); torch.manual_seed(a.seed)
@@ -188,12 +189,13 @@ def main():
         log.append({"epoch": ep, "train_loss": float(np.mean(tl)), **v})
         print(f"에폭 {ep:>2}: 학습 loss {np.mean(tl):.3f} | 검증 loss {v['loss']:.3f} 정확도 {v['acc']:.3f} "
               f"AUROC {v['auroc']:.3f} (사람 {v['person_acc']:.3f} / 사람아님 {v['not_acc']:.3f})")
-        if v["loss"] < best - 1e-4:
-            best, best_state, bad = v["loss"], copy.deepcopy(head.state_dict()), 0
+        score = v["loss"] if a.select == "loss" else -v["auroc"]
+        if score < best - 1e-4:
+            best, best_state, bad = score, copy.deepcopy(head.state_dict()), 0
         else:
             bad += 1
             if bad >= a.patience:
-                print(f"조기 종료 (검증 loss {a.patience}에폭 연속 개선 없음)")
+                print(f"조기 종료 (검증 {a.select} {a.patience}에폭 연속 개선 없음)")
                 break
 
     torch.save(best_state, a.out)
@@ -201,8 +203,8 @@ def main():
     cfg.update({"n_train": len(tr), "n_val": len(va), "trainable_params": n_params,
                 "best_val_loss": best, "train_sec": round(time.time() - t0, 1), "zeroshot_val": zs, "log": log})
     json.dump(cfg, open(a.out.replace(".pt", "_log.json"), "w"), ensure_ascii=False, indent=2)
-    print(f"\n저장: {a.out} (최적 검증 loss {best:.3f}), 학습 시간 {time.time() - t0:.0f}초")
-    print("학습 기록: runs/ft/train_log.json")
+    print(f"\n저장: {a.out} (최적 검증 {a.select} {abs(best):.3f}), 학습 시간 {time.time() - t0:.0f}초")
+    print(f"학습 기록: {a.out.replace('.pt', '_log.json')}")
 
 
 if __name__ == "__main__":
