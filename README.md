@@ -1,2 +1,89 @@
 # vlm-ambiguity-gate
-Event-triggered VLM verification for detection, tracking and Re-ID. Calls the VLM only on ambiguous cases (FP filtering, gray-zone Re-ID) on a 6GB laptop GPU.
+
+YOLO가 **애매하게 판단한 박스만** 경량 결정 VLM(OmniJev-0.8B)에 다시 물어 오탐을 걸러내는 이벤트 기반 판정 게이트입니다. 노트북 RTX 3060(6GB)에서 동작합니다.
+
+## 왜 필요한가
+MOT17-02에서 YOLO11n(입력 1280)만 썼을 때, 신뢰도 기준을 올리면 오탐은 줄지만 사람도 함께 놓칩니다.
+
+| 신뢰도 기준 | 정밀도 | 재현율 |
+|---|---|---|
+| ≥ 0.25 | 0.785 | 0.395 |
+| ≥ 0.6 | 0.976 | 0.221 |
+
+오탐은 신뢰도 **0.25~0.6 구간에 몰려 있습니다** (오탐 비율: 02번 24~54%, 04번 31~45%, 09번 42~60%). 이 구간만 VLM에 물으면 낮은 기준의 재현율을 지키면서 정밀도를 올릴 수 있습니다.
+
+## 구조
+~~~
+프레임 → YOLO11n → 신뢰도 ≥ 0.6       : 유지
+                 → 신뢰도 0.25 ~ 0.6  : 크롭 → OmniJev-0.8B "사람인가?" → p_not > 0.937 이면 제거
+                 → 신뢰도 < 0.25      : 버림
+~~~
+
+- 판정 모델: OmniJev-0.8B (Qwen3.5-0.8B + LoRA + 판정 헤드). 글을 생성하지 않고 선택지별 확률을 forward 1회로 출력하는 Jev 계열 결정 모델
+- 질문: "surveillance camera 크롭, 작거나 흐리거나 잘려도 보행자인가" (`scripts/prompts.py`의 P1)
+- 입력: 박스 주변 여백 30%, 높이 336px 미만이면 확대
+
+## 데이터 분할 (영상 단위로 완전히 분리)
+| 용도 | MOT17 영상 | 크롭 수 |
+|---|---|---|
+| 학습 | 04, 05, 09, 11, 13 | 2,583 |
+| 검증 (시점·문구·기준값 선택) | 10 | 417 |
+| 시험 (마지막 1회 채점) | 02 | 400 (사람 200 / 사람 아님 200) |
+
+- 사람 = YOLO 박스가 보행자 정답과 IoU ≥ 0.5
+- 사람 아님 = 어떤 정답과도 IoU < 0.1인 배경 오탐 + MOT17 방해물(마네킹 등)·반사 박스
+- 박스 어긋남(정답과 IoU 0.1~0.5)과 멈춘 사람은 정답이 애매해 제외
+
+## 결과 (시험 영상 MOT17-02)
+| 단계 | 정확도 | AUROC | 오탐 제거 @사람손실 5% | @10% |
+|---|---|---|---|---|
+| 제로샷 (초기 문구) | 0.515 | 0.791 | 31.5% | 44.5% |
+| + 판정 헤드 미세조정 | 0.745 | 0.828 | 43.0% | 49.5% |
+| 제로샷 (개선 문구 + 여백·확대) | 0.695 | 0.802 | 29.5% | 51.5% |
+| **+ 판정 헤드 미세조정 (최종)** | **0.760** | **0.870** | **62.0%** | **72.0%** |
+
+**운영 기준값은 검증 영상에서 정하고 시험 영상에 그대로 적용:**
+
+| 목표 사람 손실 | 검증에서 정한 기준 | 시험 오탐 제거 | 시험 실제 사람 손실 |
+|---|---|---|---|
+| 5% | p_not > 0.975 | 45.0% | 1.5% |
+| 10% | p_not > 0.937 | 66.0% | 7.5% |
+
+지연: 크롭 1장당 약 330ms(질문 2개, 전처리 포함), VRAM 1.88GB. 측정 조건은 [`docs/measure_conditions.md`](docs/measure_conditions.md).
+
+## 미세조정 방법
+- 백본(Qwen3.5-0.8B)과 LoRA는 고정하고 **판정 헤드(4.21M 파라미터)만 학습**. OmniJev 저장소에 학습 코드가 없어 직접 작성 (`scripts/04_finetune_head.py`)
+- 크롭마다 백본을 한 번 통과시켜 헤드 입력을 저장한 뒤 헤드만 반복 학습. 저장 입력으로 계산한 값이 실제 추론값과 같은지 확인 후 진행
+- 손실: 로그 점수(적정 채점 규칙) + 참/거짓 질문 로그 손실 + 확률합 초과 벌점
+- AdamW, 학습률 1e-4, 가중치 감쇠 0.01, 배치 32, 최대 15에폭, 시점은 검증 AUROC로 선택
+
+## 배운 점
+1. **제로샷 실패의 주원인은 질문 문구였다.** "fully visible real person"이 흐릿하거나 잘린 CCTV 보행자를 밀어내, 진짜 사람의 96%를 사람 아님으로 판정했다. 문구만 바꿔도 (검증 영상 기준) 사람 인식이 0.4% → 71%.
+2. **같은 영상 안에서 무작위로 나눈 검증은 과대평가된다.** 검증 0.98 vs 처음 보는 영상 0.73. 이웃 프레임이 거의 같은 장면이기 때문.
+3. **처음 보는 장면에서는 검증 손실과 정확도가 반대로 움직일 수 있다.** 손실로 시점을 고르니 1에폭이 선택됐다. 구분 능력(AUROC)으로 고르도록 변경.
+4. **문구·입력·기준값은 모두 검증 영상으로만 골랐다.** 시험 영상은 마지막에 한 번만 채점.
+
+## 한계와 다음 단계
+- LoRA는 학습하지 않음 (판정 헤드만). 다음 단계: LoRA 학습, 데이터 추가
+- 미세조정 후 확률 보정이 나빠짐 (ECE 0.057 → 0.170) → 검증 데이터로 온도 보정 필요
+- 크롭 단위 평가. 추적(ByteTrack)으로 같은 사람에게 한 번만 묻는 전체 프레임 파이프라인과 호출 비율 측정은 다음 단계
+- 시험 영상 1개, 학습 1회(시드 0)
+
+## 재현
+~~~bash
+python scripts/01_yolo_baseline.py --seq <MOT17>/train/MOT17-02-FRCNN          # 04,05,09,10,11,13도 동일
+python scripts/02_build_crops.py --split test_i2 --seqs MOT17-02-FRCNN --per-class 200 --pad 0.3 --min-h 336
+python scripts/02_build_crops.py --split train6_i2 --seqs MOT17-04-FRCNN MOT17-05-FRCNN MOT17-09-FRCNN \
+  MOT17-10-FRCNN MOT17-11-FRCNN MOT17-13-FRCNN --per-class 1500 --pad 0.3 --min-h 336
+python scripts/06_sweep_prompt_input.py --manifest <crops>/val10.csv                 # 문구·입력 선택 (검증 영상)
+python scripts/04_finetune_head.py --train <crops>/train6_i2.csv --val-seq MOT17-10-FRCNN \
+  --select auroc --epochs 15 --patience 5 --prompt P1 --out runs/ft/head_i2p1.pt
+python scripts/03_eval_omnijev.py --manifest <crops>/test_i2.csv --tag headft_i2p1 --head runs/ft/head_i2p1.pt --prompt P1
+~~~
+OmniJev 코드(`tinnel123666888/OmniJev`)와 가중치(`tinnel123/OmniJev-0.8B`, `Qwen/Qwen3.5-0.8B`)는 따로 받아야 합니다.
+
+## 라이선스
+- 이 저장소의 코드: MIT
+- OmniJev-0.8B 어댑터·헤드: **PolyForm Noncommercial 1.0.0** (비상업 연구 목적으로만 사용, 이 저장소에 가중치 미포함)
+- Qwen3.5-0.8B: 자체 라이선스
+- MOT17: CC BY-NC-SA 3.0, 영상·크롭은 이 저장소에 포함하지 않음
