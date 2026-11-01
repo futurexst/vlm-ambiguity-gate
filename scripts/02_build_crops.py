@@ -60,7 +60,7 @@ def collect(seq_dir, lab_csv, lo, hi):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--split", required=True, choices=["train", "test"])
+    ap.add_argument("--split", required=True)
     ap.add_argument("--seqs", nargs="+", required=True)
     ap.add_argument("--per-class", type=int, default=200, help="정답별 최대 개수 (여러 영상 합계)")
     ap.add_argument("--lo", type=float, default=0.25)

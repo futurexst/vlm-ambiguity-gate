@@ -108,6 +108,8 @@ def main():
     ap.add_argument("--val-frac", type=float, default=0.15)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--reextract", action="store_true")
+    ap.add_argument("--val-seq", default=None, help="이 영상을 통째로 검증용으로 사용 (정보 누수 방지)")
+    ap.add_argument("--out", default="runs/ft/head_ft.pt")
     a = ap.parse_args()
 
     random.seed(a.seed); np.random.seed(a.seed); torch.manual_seed(a.seed)
@@ -131,7 +133,7 @@ def main():
         sys.exit("두 값이 다릅니다. 이 출력을 그대로 보내주세요.")
 
     # ── 1) 특징 추출 (한 번만, 이후엔 저장본 사용) ──
-    cache = "runs/ft/feats_train.pt"
+    cache = f"runs/ft/feats_{os.path.splitext(os.path.basename(a.train))[0]}.pt"
     if os.path.exists(cache) and not a.reextract:
         data = torch.load(cache)
         print(f"저장된 특징 사용: {cache} ({len(data)}개)")
@@ -149,9 +151,12 @@ def main():
     # ── 2) 학습/검증 분할 (정답 비율 유지) ──
     idx = {0: [i for i, s in enumerate(data) if s["y"] == 0], 1: [i for i, s in enumerate(data) if s["y"] == 1]}
     val_idx = []
-    for k in idx:
-        random.shuffle(idx[k])
-        val_idx += idx[k][:int(len(idx[k]) * a.val_frac)]
+    if a.val_seq:
+        val_idx = [i for i, s in enumerate(data) if s["seq"] == a.val_seq]
+    else:
+        for k in idx:
+            random.shuffle(idx[k])
+            val_idx += idx[k][:int(len(idx[k]) * a.val_frac)]
     vs = set(val_idx)
     tr = [data[i] for i in range(len(data)) if i not in vs]
     va = [data[i] for i in val_idx]
@@ -178,7 +183,7 @@ def main():
             opt.zero_grad()
             loss.backward()
             opt.step()
-            tl.append(float(loss))
+            tl.append(float(loss.detach()))
         v = evaluate(head, va, dev, i_not)
         log.append({"epoch": ep, "train_loss": float(np.mean(tl)), **v})
         print(f"에폭 {ep:>2}: 학습 loss {np.mean(tl):.3f} | 검증 loss {v['loss']:.3f} 정확도 {v['acc']:.3f} "
@@ -191,12 +196,12 @@ def main():
                 print(f"조기 종료 (검증 loss {a.patience}에폭 연속 개선 없음)")
                 break
 
-    torch.save(best_state, "runs/ft/head_ft.pt")
+    torch.save(best_state, a.out)
     cfg = {k: v for k, v in vars(a).items()}
     cfg.update({"n_train": len(tr), "n_val": len(va), "trainable_params": n_params,
                 "best_val_loss": best, "train_sec": round(time.time() - t0, 1), "zeroshot_val": zs, "log": log})
-    json.dump(cfg, open("runs/ft/train_log.json", "w"), ensure_ascii=False, indent=2)
-    print(f"\n저장: runs/ft/head_ft.pt (최적 검증 loss {best:.3f}), 학습 시간 {time.time() - t0:.0f}초")
+    json.dump(cfg, open(a.out.replace(".pt", "_log.json"), "w"), ensure_ascii=False, indent=2)
+    print(f"\n저장: {a.out} (최적 검증 loss {best:.3f}), 학습 시간 {time.time() - t0:.0f}초")
     print("학습 기록: runs/ft/train_log.json")
 
 
