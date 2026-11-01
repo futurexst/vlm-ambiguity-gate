@@ -34,6 +34,7 @@ from mso.head import noul_loss       # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 E = importlib.import_module("03_eval_omnijev")   # QUESTIONS, auroc 재사용 (채점과 같은 질문)
 QUESTIONS = E.QUESTIONS
+from prompts import PROMPTS  # noqa: E402
 
 
 @torch.no_grad()
@@ -111,7 +112,11 @@ def main():
     ap.add_argument("--val-seq", default=None, help="이 영상을 통째로 검증용으로 사용 (정보 누수 방지)")
     ap.add_argument("--out", default="runs/ft/head_ft.pt")
     ap.add_argument("--select", default="loss", choices=["loss", "auroc"], help="최적 시점 선택 기준")
+    ap.add_argument("--prompt", default="P0", help="prompts.py의 문구 이름")
     a = ap.parse_args()
+    global QUESTIONS
+    QUESTIONS = PROMPTS[a.prompt]
+    print(f"문구: {a.prompt}")
 
     random.seed(a.seed); np.random.seed(a.seed); torch.manual_seed(a.seed)
     os.makedirs("runs/ft", exist_ok=True)
@@ -134,7 +139,7 @@ def main():
         sys.exit("두 값이 다릅니다. 이 출력을 그대로 보내주세요.")
 
     # ── 1) 특징 추출 (한 번만, 이후엔 저장본 사용) ──
-    cache = f"runs/ft/feats_{os.path.splitext(os.path.basename(a.train))[0]}.pt"
+    cache = f"runs/ft/feats_{os.path.splitext(os.path.basename(a.train))[0]}_{a.prompt}.pt"
     if os.path.exists(cache) and not a.reextract:
         data = torch.load(cache)
         print(f"저장된 특징 사용: {cache} ({len(data)}개)")

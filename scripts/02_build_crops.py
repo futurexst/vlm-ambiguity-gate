@@ -66,6 +66,7 @@ def main():
     ap.add_argument("--lo", type=float, default=0.25)
     ap.add_argument("--hi", type=float, default=0.6)
     ap.add_argument("--pad", type=float, default=0.1, help="박스 주변 여백 비율")
+    ap.add_argument("--min-h", type=int, default=0, help="크롭 높이가 이보다 작으면 이 높이로 확대 (0=안 함)")
     ap.add_argument("--data", default="~/work/data/MOT17/train")
     ap.add_argument("--out", default="~/work/data/crops")
     ap.add_argument("--seed", type=int, default=0)
@@ -108,7 +109,10 @@ def main():
             d = os.path.join(out, a.split, it["label"])
             os.makedirs(d, exist_ok=True)
             path = os.path.join(d, f"{seq}_{fr:06d}_{i}.jpg")
-            im.crop((cx1, cy1, cx2, cy2)).save(path, quality=95)
+            c = im.crop((cx1, cy1, cx2, cy2))
+            if a.min_h and c.height < a.min_h:
+                c = c.resize((max(1, round(c.width * a.min_h / c.height)), a.min_h), Image.LANCZOS)
+            c.save(path, quality=95)
             rows.append([path, it["label"], seq, fr, round(it["conf"], 4), it["src"],
                          round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1), round(y2 - y1, 1)])
 

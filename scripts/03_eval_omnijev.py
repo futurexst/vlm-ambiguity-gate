@@ -25,6 +25,8 @@ from scipy.stats import rankdata
 
 sys.path.insert(0, os.path.expanduser("~/work/OmniJev"))
 from mso.infer import MSO1  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from prompts import PROMPTS  # noqa: E402
 
 QUESTIONS = {
     "what": {"type": "choice",
@@ -65,9 +67,12 @@ def main():
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--tag", required=True)
     ap.add_argument("--head", default=None, help="미세조정한 판정 헤드 가중치(.pt). 없으면 원본 그대로")
+    ap.add_argument("--prompt", default="P0", help="prompts.py의 문구 이름")
     ap.add_argument("--ckpt", default="~/work/models/omnijev-0.8b")
     ap.add_argument("--base", default="~/work/models/qwen3.5-0.8b")
     a = ap.parse_args()
+    Q = PROMPTS[a.prompt]
+    print(f"문구: {a.prompt}")
 
     m = MSO1(os.path.expanduser(a.ckpt), os.path.expanduser(a.base))
     if a.head:
@@ -76,18 +81,18 @@ def main():
     torch.cuda.reset_peak_memory_stats()
 
     rows = list(csv.DictReader(open(os.path.expanduser(a.manifest))))
-    m.system_one({"images": [rows[0]["path"]]}, QUESTIONS)          # 워밍업
+    m.system_one({"images": [rows[0]["path"]]}, Q)                  # 워밍업
     torch.cuda.synchronize()
 
     out = []
     for i, r in enumerate(rows):
         t = time.perf_counter()
-        ans = m.system_one({"images": [r["path"]]}, QUESTIONS)      # 매번 새 크롭 → 전처리 포함 실제 지연
+        ans = m.system_one({"images": [r["path"]]}, Q)              # 매번 새 크롭 → 전처리 포함 실제 지연
         torch.cuda.synchronize()
         lat = (time.perf_counter() - t) * 1000
         pr = ans["what"]["probabilities"]
         out.append({"path": r["path"], "label": r["label"], "src": r["src"], "conf": r["conf"],
-                    "p_person": pr["person"], "p_occluded": pr["occluded person"], "p_not": pr["not person"],
+                    "p_person": round(sum(v for k, v in pr.items() if k != "not person"), 4), "p_not": pr["not person"],
                     "abstain": ans["what"]["abstain"], "confidence": ans["what"]["confidence"],
                     "choice": ans["what"]["choice"], "noul_real": ans["real"]["noul"], "lat_ms": round(lat, 1)})
         if (i + 1) % 50 == 0:
